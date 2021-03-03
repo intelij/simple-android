@@ -1,11 +1,13 @@
 package org.simple.clinic.appupdate
 
-import android.app.Application
-import android.app.PendingIntent
-import com.google.android.play.core.appupdate.AppUpdateInfo
-import com.google.android.play.core.install.model.InstallStatus
+import android.content.Context
+import com.google.android.play.core.appupdate.AppUpdateManager
+import com.google.android.play.core.appupdate.AppUpdateManagerFactory
+import com.google.android.play.core.appupdate.testing.FakeAppUpdateManager
 import com.google.android.play.core.install.model.UpdateAvailability
+import com.nhaarman.mockitokotlin2.doReturn
 import com.nhaarman.mockitokotlin2.mock
+import com.nhaarman.mockitokotlin2.whenever
 import io.reactivex.subjects.PublishSubject
 import junitparams.JUnitParamsRunner
 import junitparams.Parameters
@@ -25,36 +27,31 @@ class CheckAppUpdateAvailabilityTest {
   private val currentAppVersionCode = 1
   private val differenceInVersionsToShowUpdate = 1
 
+  lateinit var fakeAppUpdateManager: FakeAppUpdateManager
   lateinit var checkUpdateAvailable: CheckAppUpdateAvailability
 
   @Test
   @Parameters(method = "params for checking app update")
   fun `when app update is available and it is eligible for updates, then the user should be nudged for an app update`(
       availableVersionCode: Int,
-      updateAvailabilityState: Int,
-      flexibleUpdateIntent: PendingIntent?,
+      @UpdateAvailability updateAvailabilityState: Int,
       isInAppUpdateEnabled: Boolean,
       appUpdateState: AppUpdateState
   ) {
-    val packageName = "org.simple.clinic"
-    val immediateUpdateIntent = mock<PendingIntent>()
-
-    val appUpdateInfo = AppUpdateInfo(
-        packageName,
-        availableVersionCode,
-        updateAvailabilityState,
-        InstallStatus.DOWNLOADED,
-        immediateUpdateIntent,
-        flexibleUpdateIntent
-    )
 
     setup(isFeatureEnabled = isInAppUpdateEnabled)
 
-    val testObserver = checkUpdateAvailable
-        .shouldNudgeForUpdate(appUpdateInfo)
-        .test()
+    if (updateAvailabilityState == UpdateAvailability.UPDATE_AVAILABLE) {
+      fakeAppUpdateManager.setUpdateAvailable(availableVersionCode)
+    } else {
+      fakeAppUpdateManager.setUpdateNotAvailable()
+    }
 
     configProvider.onNext(AppUpdateConfig(1))
+
+    val testObserver = checkUpdateAvailable
+        .listen()
+        .test()
 
     with(testObserver) {
       assertNoErrors()
@@ -68,53 +65,51 @@ class CheckAppUpdateAvailabilityTest {
     fun testCase(
         versionCode: Int,
         updateAvailabilityState: Int,
-        flexibleUpdateIntent: PendingIntent?,
         isInAppUpdateEnabled: Boolean,
         appUpdateState: AppUpdateState
     ): List<Any?> {
-      return listOf(versionCode, updateAvailabilityState, flexibleUpdateIntent, isInAppUpdateEnabled, appUpdateState)
+      return listOf(
+          versionCode,
+          updateAvailabilityState,
+          isInAppUpdateEnabled,
+          appUpdateState
+      )
     }
 
     return listOf(
         testCase(
             versionCode = 1,
             updateAvailabilityState = UpdateAvailability.UPDATE_AVAILABLE,
-            flexibleUpdateIntent = mock(),
             isInAppUpdateEnabled = true,
             appUpdateState = DontShowAppUpdate
         ),
         testCase(
             versionCode = 2111,
             updateAvailabilityState = UpdateAvailability.UPDATE_NOT_AVAILABLE,
-            flexibleUpdateIntent = mock(),
             isInAppUpdateEnabled = true,
             appUpdateState = DontShowAppUpdate
         ),
         testCase(
             versionCode = 2000,
             updateAvailabilityState = UpdateAvailability.UPDATE_AVAILABLE,
-            flexibleUpdateIntent = null,
             isInAppUpdateEnabled = true,
             appUpdateState = DontShowAppUpdate
         ),
         testCase(
             versionCode = 1000,
             updateAvailabilityState = UpdateAvailability.UPDATE_AVAILABLE,
-            flexibleUpdateIntent = mock(),
             isInAppUpdateEnabled = false,
             appUpdateState = DontShowAppUpdate
         ),
         testCase(
             versionCode = 2,
             updateAvailabilityState = UpdateAvailability.UPDATE_AVAILABLE,
-            flexibleUpdateIntent = mock(),
             isInAppUpdateEnabled = true,
             appUpdateState = ShowAppUpdate
         ),
         testCase(
             versionCode = 2111,
             updateAvailabilityState = UpdateAvailability.UPDATE_AVAILABLE,
-            flexibleUpdateIntent = mock(),
             isInAppUpdateEnabled = true,
             appUpdateState = ShowAppUpdate
         )
@@ -124,7 +119,7 @@ class CheckAppUpdateAvailabilityTest {
   private fun setup(
       isFeatureEnabled: Boolean
   ) {
-    val versionCodeCheck = { versionCode: Int, _: Application, _: AppUpdateConfig ->
+    val versionCodeCheck = { versionCode: Int, _: Context, _: AppUpdateConfig ->
       versionCode.minus(currentAppVersionCode) >= differenceInVersionsToShowUpdate
     }
 
@@ -132,8 +127,16 @@ class CheckAppUpdateAvailabilityTest {
         remoteConfigService = NoOpRemoteConfigService(DefaultValueConfigReader()),
         overrides = mapOf(Feature.NotifyAppUpdateAvailable to isFeatureEnabled)
     )
+
+    val context = mock<Context>()
+    val packageName = "org.simple.clinic"
+
+    whenever(context.packageName) doReturn packageName
+
+    fakeAppUpdateManager = FakeAppUpdateManager(context)
     checkUpdateAvailable = CheckAppUpdateAvailability(
-        appContext = mock(),
+        appContext = context,
+        appUpdateManager = fakeAppUpdateManager,
         config = configProvider,
         versionUpdateCheck = versionCodeCheck,
         features = features
